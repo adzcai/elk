@@ -3,6 +3,7 @@ from typing import Literal
 import torch
 from torch import Tensor, nn
 
+NormalizationMode = Literal["none", "meanonly", "full"]
 
 class Normalizer(nn.Module):
     """Basically `BatchNorm` with a less annoying default axis ordering."""
@@ -17,7 +18,7 @@ class Normalizer(nn.Module):
         device: str | torch.device | None = None,
         dtype: torch.dtype | None = None,
         eps: float = 1e-5,
-        mode: Literal["none", "meanonly", "full"] = "full",
+        mode: NormalizationMode = "full",
     ):
         super().__init__()
 

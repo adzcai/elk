@@ -4,6 +4,7 @@ import math
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Literal, Optional, cast
+from jaxtyping import Float
 
 import torch
 import torch.nn as nn
@@ -14,9 +15,12 @@ from ..metrics import roc_auc
 from ..parsing import parse_loss
 from ..utils.typing import assert_type
 from .classifier import Classifier
-from .losses import LOSSES
-from .normalizer import Normalizer
+from .losses import LOSSES, LogitsMultiChoice, LogitsTrueFalse, check_true_false
+from .normalizer import NormalizationMode, Normalizer
 from .reporter import Reporter, ReporterConfig
+
+
+Hiddens = Float[Tensor, "*batch n_variants hidden_size n_choices"]
 
 
 @dataclass
@@ -57,6 +61,7 @@ class CcsReporterConfig(ReporterConfig):
     init: Literal["default", "pca", "spherical", "zero"] = "default"
     loss: list[str] = field(default_factory=lambda: ["ccs"])
     loss_dict: dict[str, float] = field(default_factory=dict, init=False)
+    normalization: NormalizationMode = "full"
     num_layers: int = 1
     pre_ln: bool = False
     seed: int = 42
@@ -97,8 +102,8 @@ class CcsReporter(Reporter):
 
         hidden_size = cfg.hidden_size or 4 * in_features // 3
 
-        self.neg_norm = Normalizer((in_features,), device=device, dtype=dtype)
-        self.pos_norm = Normalizer((in_features,), device=device, dtype=dtype)
+        self.neg_norm = Normalizer((in_features,), device=device, dtype=dtype, mode=cfg.normalization)
+        self.pos_norm = Normalizer((in_features,), device=device, dtype=dtype, mode=cfg.normalization)
 
         self.probe = nn.Sequential(
             nn.Linear(
@@ -137,9 +142,11 @@ class CcsReporter(Reporter):
 
         Args:
             train_pair: A tuple of tensors, (x0, x1), where x0 and x1 are the
-                contrastive representations. Used for training the classifier.
+                unnormalized negative and positive representations respectively.
+                Used for training the classifier.
             val_pair: A tuple of tensors, (x0, x1), where x0 and x1 are the
-                contrastive representations. Used for evaluating the classifier.
+                unnormalized negative and positive representations respectively.
+                Used for evaluating the classifier.
 
         Returns:
             The AUROC of a linear classifier fit on the pseudo-labels.
@@ -178,9 +185,10 @@ class CcsReporter(Reporter):
             ).squeeze(-1)
             return roc_auc(pseudo_val_labels, pseudo_preds).item()
 
-    def unsupervised_loss(self, logit0: Tensor, logit1: Tensor) -> Tensor:
+    def unsupervised_loss(self, logits: LogitsMultiChoice) -> Tensor:
+        """Add together the losses specified in the `loss_dict`."""
         loss = sum(
-            LOSSES[name](logit0, logit1, coef)
+            LOSSES[name](logits, coef)
             for name, coef in self.config.loss_dict.items()
         )
         return assert_type(Tensor, loss)
@@ -224,34 +232,32 @@ class CcsReporter(Reporter):
 
     def loss(
         self,
-        logit0: Tensor,
-        logit1: Tensor,
+        logits: LogitsMultiChoice,
         labels: Optional[Tensor] = None,
     ) -> Tensor:
-        """Return the loss of the reporter on the contrast pair (x0, x1).
+        """Return the loss of the reporter on the contrast tuple (x0, ..., xk)
+        which is typically a contrast pair (x0, x1) for binary tasks.
 
         Args:
-            logit0: The raw score output of the reporter on x0.
-            logit1: The raw score output of the reporter on x1.
+            logits: the raw scores output by the reporter on the contrast pair.
             labels: The labels of the contrast pair. Defaults to None.
 
         Returns:
-            loss: The loss of the reporter on the contrast pair (x0, x1).
+            loss: The loss of the reporter on the contrast tuple (x0, ..., xk).
 
         Raises:
             ValueError: If `supervised_weight > 0` but `labels` is None.
         """
-        loss = self.unsupervised_loss(logit0, logit1)
+        loss = self.unsupervised_loss(logits)
 
         # If labels are provided, use them to compute a supervised loss
         if labels is not None:
             num_labels = len(labels)
-            assert num_labels <= len(logit0), "Too many labels provided"
-            p0 = logit0[:num_labels].sigmoid()
-            p1 = logit1[:num_labels].sigmoid()
+            assert num_labels <= len(logits), "Too many labels provided"
+            p0, p1 = logits[:num_labels].sigmoid().unbind(-1)
 
             alpha = self.config.supervised_weight
-            preds = p0.add(1 - p1).mul(0.5).squeeze(-1)
+            preds = p0.add(1 - p1).mul(0.5)
             # broadcast the labels, and flatten the predictions
             # so that both are 1D tensors
             broadcast_labels = labels.repeat_interleave(preds.shape[1]).float()
@@ -268,13 +274,13 @@ class CcsReporter(Reporter):
 
     def fit(
         self,
-        hiddens: Tensor,
+        hiddens: LogitsMultiChoice,
         labels: Optional[Tensor] = None,
     ) -> float:
-        """Fit the probe to the contrast pair (neg, pos).
+        """Fit the probe to the contrast tuple, typically a pair (neg, pos).
 
         Args:
-            contrast_pair: A tuple of tensors, (neg, pos), where x0 and x1 are the
+            hiddens: A batch of tensors, where the last dimension indexes the
                 contrastive representations.
             labels: The labels of the contrast pair. Defaults to None.
 
@@ -285,11 +291,19 @@ class CcsReporter(Reporter):
             ValueError: If `optimizer` is not "adam" or "lbfgs".
             RuntimeError: If the best loss is not finite.
         """
-        x_pos, x_neg = hiddens.unbind(2)
-        # Fit normalizers
-        self.pos_norm.fit(x_pos)
-        self.neg_norm.fit(x_neg)
-        x_pos, x_neg = self.pos_norm(x_pos), self.neg_norm(x_neg)
+
+        if hiddens.shape[-1] == 2:
+            x_neg, x_pos = hiddens.unbind(2)
+        else:
+            x_neg, x_pos = None, None
+
+        if self.config.normalization != 'none':
+            assert x_neg is not None and x_pos is not None, "Normalization can only be done for true/false tasks"
+            # Fit normalizers
+            self.neg_norm.fit(x_neg)
+            self.pos_norm.fit(x_pos)
+            x_neg = self.neg_norm(x_neg)
+            x_pos = self.pos_norm(x_pos)
 
         # Record the best acc, loss, and params found so far
         best_loss = torch.inf
@@ -300,14 +314,15 @@ class CcsReporter(Reporter):
 
             # This is sort of inefficient but whatever
             if self.config.init == "pca":
+                assert x_neg is not None and x_pos is not None, "PCA init can only be done for true/false tasks"
                 diffs = torch.flatten(x_pos - x_neg, 0, 1)
                 _, __, V = torch.pca_lowrank(diffs, q=i + 1)
                 self.probe[0].weight.data = V[:, -1, None].T
 
             if self.config.optimizer == "lbfgs":
-                loss = self.train_loop_lbfgs(x_pos, x_neg, labels)
+                loss = self.train_loop_lbfgs(hiddens, labels)
             elif self.config.optimizer == "adam":
-                loss = self.train_loop_adam(x_pos, x_neg, labels)
+                loss = self.train_loop_adam(hiddens, labels)
             else:
                 raise ValueError(f"Optimizer {self.config.optimizer} is not supported")
 
@@ -323,8 +338,7 @@ class CcsReporter(Reporter):
 
     def train_loop_adam(
         self,
-        x_neg: Tensor,
-        x_pos: Tensor,
+        hiddens: LogitsMultiChoice,
         labels: Optional[Tensor] = None,
     ) -> float:
         """Adam train loop, returning the final loss. Modifies params in-place."""
@@ -337,7 +351,7 @@ class CcsReporter(Reporter):
         for _ in range(self.config.num_epochs):
             optimizer.zero_grad()
 
-            loss = self.loss(self(x_pos), self(x_neg), labels)
+            loss = self.loss(self(hiddens), labels)
             loss.backward()
             optimizer.step()
 
@@ -345,8 +359,7 @@ class CcsReporter(Reporter):
 
     def train_loop_lbfgs(
         self,
-        x_neg: Tensor,
-        x_pos: Tensor,
+        hiddens: LogitsMultiChoice,
         labels: Optional[Tensor] = None,
     ) -> float:
         """LBFGS train loop, returning the final loss. Modifies params in-place."""
@@ -355,8 +368,8 @@ class CcsReporter(Reporter):
             self.parameters(),
             line_search_fn="strong_wolfe",
             max_iter=self.config.num_epochs,
-            tolerance_change=torch.finfo(x_pos.dtype).eps,
-            tolerance_grad=torch.finfo(x_pos.dtype).eps,
+            tolerance_change=torch.finfo(hiddens.dtype).eps,
+            tolerance_grad=torch.finfo(hiddens.dtype).eps,
         )
         # Raw unsupervised loss, WITHOUT regularization
         loss = torch.inf
@@ -365,7 +378,7 @@ class CcsReporter(Reporter):
             nonlocal loss
             optimizer.zero_grad()
 
-            loss = self.loss(self(x_pos), self(x_neg), labels)
+            loss = self.loss(self(hiddens), labels)
             regularizer = 0.0
 
             # We explicitly add L2 regularization to the loss, since LBFGS
