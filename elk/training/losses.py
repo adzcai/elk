@@ -51,6 +51,82 @@ def ccs_squared_loss(logit0: Tensor, logit1: Tensor, coef: float = 1.0) -> Tenso
     return coef * loss
 
 
+@register("multi_ccs")
+def multi_ccs_squared_loss(logits: Tensor, coef: float = 1.0) -> Tensor:
+    """A generalization of CCS loss from the original paper, modified for multiple choices.
+
+    The loss is symmetric, so it doesn't matter which argument is the original and
+    which is the negated proposition.
+
+    Args:
+        logits: The stacked log odds for each of the log odds.
+        coef: The coefficient to multiply the loss by.
+    Returns:
+        The sum of the consistency and confidence losses.
+    """
+    loss = multi_consistency_squared_loss(logits) + multi_confidence_squared_loss(
+        logits
+    )
+    return coef * loss
+
+
+@register("multi_consistency_squared")
+def multi_consistency_squared_loss(
+    logits: Tensor,
+    coef: float = 1.0,
+) -> Tensor:
+    """Negation consistency loss based on the squared difference between the
+    two distributions."""
+    p = logits.sigmoid()
+    return coef * (1 - p.sum(dim=0)).square().mean()
+
+
+@register("multi_confidence_squared")
+def multi_confidence_squared_loss(
+    logits: Tensor,
+    coef: float = 1.0,
+) -> Tensor:
+    """Confidence loss based on the squared difference between the two distributions."""
+    p = logits.sigmoid()
+    return coef * (1 - p.max(dim=0)).square().mean()
+
+
+@register("multi_se_loss")
+def multi_squared_error_loss(logits: Tensor, coef: float = 1.0) -> Tensor:
+    """Tries to get the lower (k-1) logits to be close to 0, and the largest to be close to 1, via squared error.
+
+    Args:
+        logits: The stacked log odds for each of the log odds.
+        coef: The coefficient to multiply the loss by.
+    Returns:
+        loss.
+    """
+    loss = (
+        logits.square().sum(dim=0)
+        - logits.max(dim=0).square()
+        + (1 - logits.max(dim=0)).square()
+    ).mean()
+    return coef * loss
+
+
+@register("multi_log_loss")
+def multi_log_error_loss(logits: Tensor, coef: float = 1.0) -> Tensor:
+    """Tries to get the lower (k-1) logits to be close to 0, and the largest to be close to 1, via log(1-x).
+
+    Args:
+        logits: The stacked log odds for each of the log odds.
+        coef: The coefficient to multiply the loss by.
+    Returns:
+        loss.
+    """
+    loss = -(
+        (1 - logits).log().sum(dim=0)
+        - (1 - logits.max(dim=0)).log()
+        + logits.max(dim=0).log()
+    ).mean()
+    return coef * loss
+
+
 @register("ccs_prompt_var")
 def ccs_prompt_var_loss(logit0: Tensor, logit1: Tensor, coef: float = 1.0) -> Tensor:
     """CCS loss with prompt variance regularization.
