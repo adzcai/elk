@@ -5,6 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Literal, Optional, cast
 from jaxtyping import Float
+from einops import rearrange
 
 import torch
 import torch.nn as nn
@@ -20,7 +21,7 @@ from .normalizer import NormalizationMode, Normalizer
 from .reporter import Reporter, ReporterConfig
 
 
-Hiddens = Float[Tensor, "*batch n_variants hidden_size n_choices"]
+Hiddens = Float[Tensor, "batch n_variants num_classes hidden_size"]
 
 
 @dataclass
@@ -94,6 +95,7 @@ class CcsReporter(Reporter):
         self,
         cfg: CcsReporterConfig,
         in_features: int,
+        num_classes: int,
         device: str | torch.device | None = None,
         dtype: torch.dtype | None = None,
     ):
@@ -102,8 +104,12 @@ class CcsReporter(Reporter):
 
         hidden_size = cfg.hidden_size or 4 * in_features // 3
 
-        self.neg_norm = Normalizer((in_features,), device=device, dtype=dtype, mode=cfg.normalization)
-        self.pos_norm = Normalizer((in_features,), device=device, dtype=dtype, mode=cfg.normalization)
+        self.normalizers = [
+            Normalizer(
+                (in_features,), device=device, dtype=dtype, mode=cfg.normalization
+            )
+            for _ in range(num_classes)
+        ]
 
         self.probe = nn.Sequential(
             nn.Linear(
@@ -135,8 +141,8 @@ class CcsReporter(Reporter):
 
     def check_separability(
         self,
-        train_pair: tuple[Tensor, Tensor],
-        val_pair: tuple[Tensor, Tensor],
+        train_hiddens: Hiddens,
+        val_hiddens: Hiddens,
     ) -> float:
         """Measure how linearly separable the pseudo-labels are for a contrast pair.
 
@@ -151,45 +157,46 @@ class CcsReporter(Reporter):
         Returns:
             The AUROC of a linear classifier fit on the pseudo-labels.
         """
-        _x0, _x1 = train_pair
-        _val_x0, _val_x1 = val_pair
 
-        x0, x1 = self.neg_norm(_x0), self.pos_norm(_x1)
-        val_x0, val_x1 = self.neg_norm(_val_x0), self.pos_norm(_val_x1)
+        train_hiddens_n = self.normalize(train_hiddens)
+        val_hiddens_n = self.normalize(val_hiddens)
 
-        pseudo_clf = Classifier(x0.shape[-1], device=x0.device)  # type: ignore
-        pseudo_train_labels = torch.cat(
-            [
-                x0.new_zeros(x0.shape[0]),
-                x0.new_ones(x0.shape[0]),
-            ]
-        ).repeat_interleave(
-            x0.shape[1]
-        )  # make num_variants copies of each pseudo-label
-        pseudo_val_labels = torch.cat(
-            [
-                val_x0.new_zeros(val_x0.shape[0]),
-                val_x0.new_ones(val_x0.shape[0]),
-            ]
-        ).repeat_interleave(val_x0.shape[1])
+        model_dim = train_hiddens.shape[-1]
+        pseudo_clf = Classifier(model_dim, device=train_hiddens.device)
+
+        def get_pseudo_labels(x: list[Float[Tensor, "batch n_variants hidden_size"]]):
+            n_batch = x[0].shape[0]
+            n_variants = x[0].shape[1]
+
+            pseudo_labels = torch.cat(
+                [
+                    x[0].new_ones(n_batch) * i
+                    for i in range(len(x))
+                ]
+            )
+            # make num_variants copies of each pseudo-label
+            return pseudo_labels.repeat_interleave(n_variants)
+
+        flatten_hiddens = lambda x: rearrange(
+            x,
+            "num_classes batch n_variants hidden_size -> (num_classes batch n_variants) hidden_size",
+        )
+
+        pseudo_train_labels = get_pseudo_labels(train_hiddens_n)
+        pseudo_val_labels = get_pseudo_labels(val_hiddens_n)
 
         pseudo_clf.fit(
-            # b v d -> (b v) d
-            torch.cat([x0, x1]).flatten(0, 1),
+            flatten_hiddens(train_hiddens_n),
             pseudo_train_labels,
         )
         with torch.no_grad():
-            pseudo_preds = pseudo_clf(
-                # b v d -> (b v) d
-                torch.cat([val_x0, val_x1]).flatten(0, 1)
-            ).squeeze(-1)
+            pseudo_preds = pseudo_clf(flatten_hiddens(val_hiddens_n)).squeeze(-1)
             return roc_auc(pseudo_val_labels, pseudo_preds).item()
 
     def unsupervised_loss(self, logits: LogitsMultiChoice) -> Tensor:
         """Add together the losses specified in the `loss_dict`."""
         loss = sum(
-            LOSSES[name](logits, coef)
-            for name, coef in self.config.loss_dict.items()
+            LOSSES[name](logits, coef) for name, coef in self.config.loss_dict.items()
         )
         return assert_type(Tensor, loss)
 
@@ -254,16 +261,33 @@ class CcsReporter(Reporter):
         if labels is not None:
             num_labels = len(labels)
             assert num_labels <= len(logits), "Too many labels provided"
-            p0, p1 = logits[:num_labels].sigmoid().unbind(-1)
+            num_variants = logits.shape[1]
+            broadcast_labels = labels.repeat_interleave(num_variants)
+
+            if logits.shape[-1] == 2:
+                p0, p1 = logits[:num_labels].sigmoid().unbind(2)
+
+                preds = p0.add(1 - p1).mul(0.5)
+                # broadcast the labels, and flatten the predictions
+                # so that both are 1D tensors
+                flattened_preds = preds.cpu().flatten()
+                supervised_loss = bce(
+                    flattened_preds, broadcast_labels.type_as(flattened_preds)
+                )
+
+            else:
+                p = logits[:num_labels].sigmoid()
+                p_logits = p.log() - p.sum(dim=-1, keepdim=True).log()
+                # manual cross-entropy calculation
+                neg_p_logits = rearrange(
+                    -p_logits, "batch n_variants k -> (batch n_variants) k"
+                )
+                supervised_loss = neg_p_logits[
+                    torch.arange(len(neg_p_logits)), broadcast_labels.type(torch.int)
+                ].mean()
 
             alpha = self.config.supervised_weight
-            preds = p0.add(1 - p1).mul(0.5)
-            # broadcast the labels, and flatten the predictions
-            # so that both are 1D tensors
-            broadcast_labels = labels.repeat_interleave(preds.shape[1]).float()
-            flattened_preds = preds.cpu().flatten()
-            bce_loss = bce(flattened_preds, broadcast_labels.type_as(flattened_preds))
-            loss = alpha * bce_loss + (1 - alpha) * loss
+            loss = alpha * supervised_loss + (1 - alpha) * loss
 
         elif self.config.supervised_weight > 0:
             raise ValueError(
@@ -272,9 +296,21 @@ class CcsReporter(Reporter):
 
         return loss
 
+    def normalize(
+        self, hiddens: Hiddens, fit=False
+    ) -> list[Float[Tensor, "batch n_variants hidden_size"]]:
+        classes = hiddens.unbind(2)
+        assert len(classes) == len(self.normalizers), "Number of classes does not match"
+        classes_n = []
+        for normalizer, class_hiddens in zip(self.normalizers, classes):
+            if fit:
+                normalizer.fit(class_hiddens)
+            classes_n.append(normalizer(class_hiddens))
+        return classes_n
+
     def fit(
         self,
-        hiddens: LogitsMultiChoice,
+        hiddens: Hiddens,
         labels: Optional[Tensor] = None,
     ) -> float:
         """Fit the probe to the contrast tuple, typically a pair (neg, pos).
@@ -291,19 +327,7 @@ class CcsReporter(Reporter):
             ValueError: If `optimizer` is not "adam" or "lbfgs".
             RuntimeError: If the best loss is not finite.
         """
-
-        if hiddens.shape[-1] == 2:
-            x_neg, x_pos = hiddens.unbind(2)
-        else:
-            x_neg, x_pos = None, None
-
-        if self.config.normalization != 'none':
-            assert x_neg is not None and x_pos is not None, "Normalization can only be done for true/false tasks"
-            # Fit normalizers
-            self.neg_norm.fit(x_neg)
-            self.pos_norm.fit(x_pos)
-            x_neg = self.neg_norm(x_neg)
-            x_pos = self.pos_norm(x_pos)
+        classes_n = self.normalize(hiddens, fit=True)
 
         # Record the best acc, loss, and params found so far
         best_loss = torch.inf
@@ -314,8 +338,13 @@ class CcsReporter(Reporter):
 
             # This is sort of inefficient but whatever
             if self.config.init == "pca":
-                assert x_neg is not None and x_pos is not None, "PCA init can only be done for true/false tasks"
-                diffs = torch.flatten(x_pos - x_neg, 0, 1)
+                assert (
+                    len(classes_n) == 2
+                ), "PCA init can only be done for true/false tasks"
+                x_neg, x_pos = classes_n
+                diffs = rearrange(
+                    x_pos - x_neg, "batch n_variants d -> (batch n_variants) d"
+                )
                 _, __, V = torch.pca_lowrank(diffs, q=i + 1)
                 self.probe[0].weight.data = V[:, -1, None].T
 

@@ -66,15 +66,14 @@ class Elicit(Run):
         if isinstance(self.net, CcsReporterConfig):
             assert len(train_dict) == 1, "CCS only supports single-task training"
 
-            reporter = CcsReporter(self.net, d, device=device)
+            num_classes = first_train_h.shape[2]
+            reporter = CcsReporter(self.net, d, num_classes, device=device)
             train_loss = reporter.fit(first_train_h, train_labels)
 
             (val_h, val_gt, _) = next(iter(val_dict.values()))
-            x0, x1 = first_train_h.unbind(2)
-            val_x0, val_x1 = val_h.unbind(2)
             pseudo_auroc = reporter.check_separability(
-                train_pair=(x0, x1),
-                val_pair=(val_x0, val_x1),
+                train_hiddens=first_train_h,
+                val_hiddens=val_h,
             )
 
         elif isinstance(self.net, EigenReporterConfig):

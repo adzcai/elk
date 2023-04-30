@@ -72,7 +72,9 @@ def evaluate_preds(
         if c == 2:
             auroc = roc_auc_ci(y_true, y_logits[..., 1] - y_logits[..., 0])
         else:
-            auroc = roc_auc_ci(to_one_hot(y_true, c).long(), y_logits)
+            y_true_flat = to_one_hot(y_true, c).long().view(-1, c)
+            y_logits_flat = y_logits.view(-1, c)
+            auroc = roc_auc_ci(y_true_flat, y_logits_flat)
     else:
         raise ValueError(f"Unknown mode: {ensembling}")
 

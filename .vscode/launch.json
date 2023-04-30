@@ -13,6 +13,10 @@
                 "elicit",
                 "EleutherAI/pythia-1b",
                 "ag_news",
+                "--net",
+                "ccs",
+                "--loss",
+                "1.0*multi_ccs"
             ],
             "console": "integratedTerminal",
             "justMyCode": true

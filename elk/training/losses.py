@@ -10,11 +10,14 @@ from jaxtyping import Float
 LOSSES = dict()  # Registry of loss functions
 
 
-LogitsTrueFalse = Float[Tensor, "*batch n_variants 2"]
+LogitsTrueFalse = Float[Tensor, "batch n_variants 2"]
 
-LogitsMultiChoice = Float[Tensor, "*batch n_variants k"]
+LogitsMultiChoice = Float[Tensor, "batch n_variants k"]
 
-def check_true_false(logits: Tensor, message = "This loss only works for true/false answers."):
+
+def check_true_false(
+    logits: Tensor, message="This loss only works for true/false answers."
+):
     assert logits.shape[-1] == 2, message
 
 
@@ -23,8 +26,7 @@ def register(name):
 
     def decorate(func):
         assert signature(func).parameters.keys() == {"logits", "coef"}, (
-            f"Loss function {func.__name__} must take arguments "
-            "`logits` and `coef`."
+            f"Loss function {func.__name__} must take arguments " "`logits` and `coef`."
         )
         assert (
             name not in LOSSES
@@ -71,7 +73,9 @@ def multi_ccs_squared_loss(logits: LogitsMultiChoice, coef: float = 1.0) -> Tens
     Returns:
         The sum of the consistency and confidence losses.
     """
-    loss = multi_consistency_squared_loss(logits) + multi_confidence_squared_loss(logits)
+    loss = multi_consistency_squared_loss(logits) + multi_confidence_squared_loss(
+        logits
+    )
     return coef * loss
 
 
@@ -93,7 +97,7 @@ def multi_confidence_squared_loss(
 ) -> Tensor:
     """Confidence loss based on the squared difference between the two distributions."""
     p = logits.sigmoid()
-    return coef * (1 - p.max(dim=-1)).square().mean()
+    return coef * (1 - p.max(dim=-1).values).square().mean()
 
 
 @register("multi_se_loss")
@@ -106,12 +110,9 @@ def multi_squared_error_loss(logits: LogitsMultiChoice, coef: float = 1.0) -> Te
     Returns:
         loss.
     """
-    max_p = logits.max(dim=-1)
-    loss = (
-        logits.square().sum(dim=-1)
-        - max_p.square()
-        + (1 - max_p).square()
-    ).mean()
+    p = logits.sigmoid()
+    max_p = p.max(dim=-1).values
+    loss = (p.square().sum(dim=-1) - max_p.square() + (1 - max_p).square()).mean()
     return coef * loss
 
 
@@ -125,11 +126,9 @@ def multi_log_error_loss(logits: LogitsMultiChoice, coef: float = 1.0) -> Tensor
     Returns:
         loss.
     """
-    loss = -(
-        (1 - logits).log().sum(dim=0)
-        - (1 - logits.max(dim=0)).log()
-        + logits.max(dim=0).log()
-    ).mean()
+    p = logits.sigmoid()
+    max_p = p.max(dim=-1).values
+    loss = -((1 - p).log().sum(dim=-1) - (1 - max_p).log() + max_p.log()).mean()
     return coef * loss
 
 

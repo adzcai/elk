@@ -5,6 +5,7 @@ from torch import Tensor, nn
 
 NormalizationMode = Literal["none", "meanonly", "full"]
 
+
 class Normalizer(nn.Module):
     """Basically `BatchNorm` with a less annoying default axis ordering."""
 
