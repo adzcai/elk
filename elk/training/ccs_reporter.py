@@ -82,7 +82,7 @@ class CcsReporterConfig(ReporterConfig):
 
 
 class CcsReporter(Reporter):
-    """An ELK reporter network.
+    """CCS reporter network.
 
     Args:
         in_features: The number of input features.
@@ -235,6 +235,17 @@ class CcsReporter(Reporter):
 
     def forward(self, x: Tensor) -> Tensor:
         """Return the raw score output of the probe on `x`."""
+        assert x.shape[-2] == 2, "Probe input must be a contrast pair"
+
+        # Apply normalization
+        x0, x1 = x.unbind(-2)
+        x0, x1 = self.neg_norm(x0), self.pos_norm(x1)
+        x = torch.stack([x0, x1], dim=-2)
+
+        return self.raw_forward(x)
+
+    def raw_forward(self, x: Tensor) -> Tensor:
+        """Apply the probe to the provided input, without normalization."""
         return self.probe(x).squeeze(-1)
 
     def loss(
@@ -380,7 +391,7 @@ class CcsReporter(Reporter):
         for _ in range(self.config.num_epochs):
             optimizer.zero_grad()
 
-            loss = self.loss(self(hiddens), labels)
+            loss = self.loss(self.raw_forward(hiddens), labels)
             loss.backward()
             optimizer.step()
 
@@ -409,7 +420,7 @@ class CcsReporter(Reporter):
             nonlocal loss
             optimizer.zero_grad()
 
-            loss = self.loss(self(hiddens), labels)
+            loss = self.loss(self.raw_forward(hiddens), labels)
             regularizer = 0.0
 
             # We explicitly add L2 regularization to the loss, since LBFGS
