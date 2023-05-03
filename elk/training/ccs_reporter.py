@@ -16,7 +16,7 @@ from ..metrics import roc_auc
 from ..parsing import parse_loss
 from ..utils.typing import assert_type
 from .classifier import Classifier
-from .losses import LOSSES, LogitsMultiChoice, LogitsTrueFalse, check_true_false
+from .losses import LOSSES, LogitsMultiChoice
 from .normalizer import NormalizationMode, Normalizer
 from .reporter import Reporter, ReporterConfig
 
@@ -283,7 +283,7 @@ class CcsReporter(Reporter):
                     -p_logits, "batch n_variants k -> (batch n_variants) k"
                 )
                 supervised_loss = neg_p_logits[
-                    torch.arange(len(neg_p_logits)), broadcast_labels.type(torch.int)
+                    torch.arange(len(neg_p_logits)), broadcast_labels.to(torch.long)
                 ].mean()
 
             alpha = self.config.supervised_weight
@@ -367,7 +367,7 @@ class CcsReporter(Reporter):
 
     def train_loop_adam(
         self,
-        hiddens: LogitsMultiChoice,
+        hiddens: Hiddens,
         labels: Optional[Tensor] = None,
     ) -> float:
         """Adam train loop, returning the final loss. Modifies params in-place."""
@@ -388,17 +388,19 @@ class CcsReporter(Reporter):
 
     def train_loop_lbfgs(
         self,
-        hiddens: LogitsMultiChoice,
+        hiddens: Hiddens,
         labels: Optional[Tensor] = None,
     ) -> float:
         """LBFGS train loop, returning the final loss. Modifies params in-place."""
+
+        eps = torch.finfo(hiddens.dtype).eps
 
         optimizer = torch.optim.LBFGS(
             self.parameters(),
             line_search_fn="strong_wolfe",
             max_iter=self.config.num_epochs,
-            tolerance_change=torch.finfo(hiddens.dtype).eps,
-            tolerance_grad=torch.finfo(hiddens.dtype).eps,
+            tolerance_change=eps,
+            tolerance_grad=eps,
         )
         # Raw unsupervised loss, WITHOUT regularization
         loss = torch.inf

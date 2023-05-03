@@ -1,7 +1,7 @@
 """Loss functions for training reporters."""
 
 import warnings
-from inspect import signature, get_annotations
+from inspect import signature
 
 import torch
 from torch import Tensor
@@ -16,7 +16,7 @@ LogitsMultiChoice = Float[Tensor, "batch n_variants k"]
 
 
 def check_true_false(
-    logits: Tensor, message="This loss only works for true/false answers."
+    logits: LogitsTrueFalse, message="This loss only works for true/false answers."
 ):
     assert logits.shape[-1] == 2, message
 
@@ -68,7 +68,7 @@ def multi_ccs_squared_loss(logits: LogitsMultiChoice, coef: float = 1.0) -> Tens
     which is the negated proposition.
 
     Args:
-        logits: The stacked log odds for each of the log odds.
+        logits: The stacked log odds for each of the answer classes.
         coef: The coefficient to multiply the loss by.
     Returns:
         The sum of the consistency and confidence losses.
@@ -97,7 +97,8 @@ def multi_confidence_squared_loss(
 ) -> Tensor:
     """Confidence loss based on the squared difference between the two distributions."""
     p = logits.sigmoid()
-    return coef * (1 - p.max(dim=-1).values).square().mean()
+    max_p = p.max(dim=-1).values
+    return coef * (1 - max_p).square().mean()
 
 
 @register("multi_se_loss")
