@@ -236,12 +236,9 @@ class CcsReporter(Reporter):
 
     def forward(self, x: Tensor) -> Tensor:
         """Return the raw score output of the probe on `x`."""
-        assert x.shape[-2] == 2, "Probe input must be a contrast pair"
-
         # Apply normalization
-        x0, x1 = x.unbind(-2)
-        x0, x1 = self.neg_norm(x0), self.pos_norm(x1)
-        x = torch.stack([x0, x1], dim=-2)
+        hiddens_n = self.normalize(x)
+        x = torch.stack(hiddens_n, dim=-2)
 
         return self.raw_forward(x)
 
