@@ -9,6 +9,7 @@ from einops import rearrange
 
 import torch
 import torch.nn as nn
+import warnings
 from torch import Tensor
 from torch.nn.functional import binary_cross_entropy as bce
 
@@ -62,7 +63,7 @@ class CcsReporterConfig(ReporterConfig):
     init: Literal["default", "pca", "spherical", "zero"] = "default"
     loss: list[str] = field(default_factory=lambda: ["ccs"])
     loss_dict: dict[str, float] = field(default_factory=dict, init=False)
-    normalization: NormalizationMode = "full"
+    normalization: Literal["none", "meanonly", "full"] = "full"
     num_layers: int = 1
     pre_ln: bool = False
     seed: int = 42
@@ -318,6 +319,39 @@ class CcsReporter(Reporter):
                 normalizer.fit(class_hiddens)
             classes_n.append(normalizer(class_hiddens))
         return classes_n
+
+
+    def shuffle_labels(self, hiddens: Tensor, labels: Tensor) -> Tensor:
+        """Shuffle the data according to the labels.
+        That is, get the set of "true" data points and the set of "false" data points.
+        Then create pairs of "true" and "false" data points.
+
+        Args:
+            hiddens: The hidden representations of the contrast pair.
+            labels: The labels of the contrast pair.
+
+        Returns:
+            shuffled_hiddens: The shuffled hidden representations.
+        """
+        # Get the set of "true" data points and the set of "false" data points.
+        true_hiddens = hiddens[labels == 1]
+        false_hiddens = hiddens[labels == 0]
+        if len(true_hiddens) != len(false_hiddens):
+            warnings.warn(
+                f"Number of true and false data points are not equal: {len(true_hiddens)} != {len(false_hiddens)}"
+            )
+            num_pairs = min(len(true_hiddens), len(false_hiddens))
+            true_hiddens = true_hiddens[:num_pairs]
+            false_hiddens = false_hiddens[:num_pairs]
+
+        # Shuffle the "false" data points.
+        shuffled_false_hiddens = false_hiddens[torch.randperm(len(false_hiddens))]
+
+        # Create pairs of "true" and "false" data points.
+        shuffled_hiddens = torch.cat([true_hiddens, shuffled_false_hiddens], dim=0)
+
+        return shuffled_hiddens
+        
 
     def fit(
         self,

@@ -12,11 +12,9 @@
             "args": [
                 "elicit",
                 "EleutherAI/pythia-1b",
-                "ag_news",
+                "adzcai/genealogy_synthetic_v3",
                 "--net",
-                "ccs",
-                "--loss",
-                "1.0*multi_ccs"
+                "ccs"
             ],
             "console": "integratedTerminal",
             "justMyCode": true

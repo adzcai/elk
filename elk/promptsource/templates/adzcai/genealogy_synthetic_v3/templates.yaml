@@ -1,0 +1,16 @@
+dataset: adzcai/genealogy_synthetic_v3
+balance: false
+templates:
+  00caa8cb-7f67-43bc-9e90-fc1d5d329432: !Template
+    answer_choices: '{{ answer0 }} ||| {{ answer1 }} ||| {{ answer2 }} ||| {{ answer3 }}'
+    id: 00caa8cb-7f67-43bc-9e90-fc1d5d329432
+    jinja: '{{ question }} ||| {{ answer_choices[label] }}' 
+    metadata: !TemplateMetadata
+      choices_in_prompt: true
+      languages:
+      - en
+      metrics:
+      - Accuracy
+      original_task: true
+    name: complete_first_then
+    reference: ''

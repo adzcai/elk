@@ -93,7 +93,7 @@ def load_prompts(
     else:
         fewshot_iter = None
 
-    if label_column in ds.features:
+    if prompter.balance and label_column in ds.features:
         ds = BalancedSampler(
             ds.to_iterable_dataset(),
             set(label_choices),

@@ -248,6 +248,7 @@ class DatasetTemplates:
     """
 
     binarize: bool = False
+    balance: bool = True
     label_column: str | None
     templates: dict[str, Template]
 
@@ -261,6 +262,7 @@ class DatasetTemplates:
             # Required field; contains all the templates keyed by ID
             self.templates = yaml_dict["templates"]
             self.binarize = yaml_dict.get("binarize", False)
+            self.balance = yaml_dict.get("balance", True)
             self.label_column = yaml_dict.get("label_column")
 
     def drop_non_mc_templates(self) -> int:
