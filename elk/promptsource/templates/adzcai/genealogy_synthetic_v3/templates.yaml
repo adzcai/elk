@@ -12,5 +12,5 @@ templates:
       metrics:
       - Accuracy
       original_task: true
-    name: complete_first_then
+    name: direct_ask_genealogy
     reference: ''

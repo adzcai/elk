@@ -197,7 +197,7 @@ def consistency_squared_loss(
     """Negation consistency loss based on the squared difference between the
     two distributions."""
     check_true_false(logits)
-    p0, p1 = logits.sigmoid().unbind(-1)
+    p0, p1 = logits.sigmoid().unbind(dim=-1)
     return coef * p0.sub(1 - p1).square().mean()
 
 
@@ -208,7 +208,7 @@ def confidence_squared_loss(
 ) -> Tensor:
     """Confidence loss based on the squared difference between the two distributions."""
     check_true_false(logits)
-    p0, p1 = logits.sigmoid().unbind(-1)
+    p0, p1 = logits.sigmoid().unbind(dim=-1)
     return coef * torch.min(p0, p1).square().mean()
 
 
@@ -232,7 +232,7 @@ def prompt_var_loss(logits: LogitsTrueFalse, coef: float = 1.0) -> Tensor:
             "Only one variant provided. Prompt variance loss will cause errors."
         )
 
-    p0, p1 = logits.sigmoid().unbind(-1)
+    p0, p1 = logits.sigmoid().unbind(dim=-1)
 
     var0 = p0.var(dim=-1, unbiased=False).mean()
     var1 = p1.var(dim=-1, unbiased=False).mean()

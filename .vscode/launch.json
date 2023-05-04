@@ -11,10 +11,19 @@
             "program": "${file}",
             "args": [
                 "elicit",
-                "EleutherAI/pythia-1b",
+                "allenai/unifiedqa-t5-base",
                 "adzcai/genealogy_synthetic_v3",
                 "--net",
-                "ccs"
+                "ccs",
+                "--use_encoder_states",
+                "--token_loc",
+                "first",
+                "--normalization",
+                "none",
+                "--loss",
+                "1.0*multi_ccs",
+                "--lr",
+                "1e-4"
             ],
             "console": "integratedTerminal",
             "justMyCode": true

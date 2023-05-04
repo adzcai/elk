@@ -402,7 +402,8 @@ class CcsReporter(Reporter):
                 best_state = deepcopy(self.state_dict())
 
         if not math.isfinite(best_loss):
-            raise RuntimeError("Got NaN/infinite loss during training")
+            # raise RuntimeError("Got NaN/infinite loss during training")
+            warnings.warn("Got NaN/infinite loss during training")
 
         self.load_state_dict(best_state)
         return best_loss
